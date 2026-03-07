@@ -1,25 +1,33 @@
 package chalk
 
 import (
+	"context"
+	"flag"
+	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/fogfish/stream/spool"
 )
 
 // ── Styles ────────────────────────────────────────────────────────────────────
 
 var (
-	stylePending = lipgloss.NewStyle().Faint(true)
-	styleRunning = lipgloss.NewStyle().Bold(true)
-	styleDone    = lipgloss.NewStyle().Strikethrough(true).Faint(true)
-	styleFailed  = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true)
-	styleIndent  = lipgloss.NewStyle().PaddingLeft(4)
-	styleCheck   = lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true)
-	styleCross   = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true)
-	styleSpinClr = lipgloss.NewStyle().Foreground(lipgloss.Color("12"))
+	stylePending  = lipgloss.NewStyle().Faint(true)
+	styleRunning  = lipgloss.NewStyle().Bold(true)
+	styleDone     = lipgloss.NewStyle().Strikethrough(true).Faint(true)
+	styleFailed   = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true)
+	styleError    = lipgloss.NewStyle().Faint(false)
+	styleIndent   = lipgloss.NewStyle().PaddingLeft(4)
+	styleCheck    = lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true)
+	styleCross    = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true)
+	styleSpinClr  = lipgloss.NewStyle().Foreground(lipgloss.Color("12"))
+	styleTimer    = lipgloss.NewStyle().Foreground(lipgloss.Color("12"))
+	styleTimerOff = lipgloss.NewStyle().Faint(true)
 )
 
 // ── Item states ───────────────────────────────────────────────────────────────
@@ -36,14 +44,18 @@ const (
 // ── Data model ────────────────────────────────────────────────────────────────
 
 type subItem struct {
-	label string
-	state itemState
+	label     string
+	state     itemState
+	startTime time.Time
+	elapsed   time.Duration
 }
 
 type taskItem struct {
-	label string
-	state itemState
-	subs  []subItem
+	label     string
+	state     itemState
+	subs      []subItem
+	startTime time.Time
+	elapsed   time.Duration
 }
 
 // ── BubbleTea messages ────────────────────────────────────────────────────────
@@ -56,6 +68,7 @@ type (
 	msgSubDone   struct{}
 	msgSubFail   struct{ err error }
 	msgQuit      struct{}
+	msgPanic     struct{ err error }
 )
 
 // pollCh returns a Cmd that blocks until the next message arrives on ch.
@@ -66,9 +79,11 @@ func pollCh(ch <-chan tea.Msg) tea.Cmd {
 // ── BubbleTea model ───────────────────────────────────────────────────────────
 
 type progressModel struct {
-	spinner spinner.Model
-	tasks   []taskItem
-	ch      <-chan tea.Msg
+	spinner  spinner.Model
+	tasks    []taskItem
+	ch       <-chan tea.Msg
+	panicErr error
+	width    int
 }
 
 func newProgressModel(ch <-chan tea.Msg) progressModel {
@@ -117,30 +132,33 @@ func (m progressModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case msgTaskStart:
-		m.tasks = append(m.tasks, taskItem{label: msg.label, state: stateRunning})
+		m.tasks = append(m.tasks, taskItem{label: msg.label, state: stateRunning, startTime: time.Now()})
 		return m, pollCh(m.ch)
 
 	case msgTaskDone:
 		if i := m.currentTask(); i >= 0 {
+			m.tasks[i].elapsed = time.Since(m.tasks[i].startTime)
 			m.tasks[i].state = stateDone
 		}
 		return m, pollCh(m.ch)
 
 	case msgTaskFail:
 		if i := m.currentTask(); i >= 0 {
+			m.tasks[i].elapsed = time.Since(m.tasks[i].startTime)
 			m.tasks[i].state = stateFailed
 		}
 		return m, pollCh(m.ch)
 
 	case msgSubStart:
 		if t := m.currentTask(); t >= 0 {
-			m.tasks[t].subs = append(m.tasks[t].subs, subItem{label: msg.label, state: stateRunning})
+			m.tasks[t].subs = append(m.tasks[t].subs, subItem{label: msg.label, state: stateRunning, startTime: time.Now()})
 		}
 		return m, pollCh(m.ch)
 
 	case msgSubDone:
 		if t := m.currentTask(); t >= 0 {
 			if s := m.currentSub(); s >= 0 {
+				m.tasks[t].subs[s].elapsed = time.Since(m.tasks[t].subs[s].startTime)
 				m.tasks[t].subs[s].state = stateDone
 			}
 		}
@@ -149,6 +167,7 @@ func (m progressModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case msgSubFail:
 		if t := m.currentTask(); t >= 0 {
 			if s := m.currentSub(); s >= 0 {
+				m.tasks[t].subs[s].elapsed = time.Since(m.tasks[t].subs[s].startTime)
 				m.tasks[t].subs[s].state = stateFailed
 			}
 		}
@@ -156,6 +175,14 @@ func (m progressModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case msgQuit:
 		return m, tea.Quit
+
+	case msgPanic:
+		m.panicErr = msg.err
+		return m, tea.Quit
+
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		return m, nil
 
 	case tea.KeyMsg:
 		if msg.String() == "ctrl+c" {
@@ -166,30 +193,62 @@ func (m progressModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func renderItem(_, label string, st itemState, styleSpin func() string) (prefix, text string) {
-	switch st {
-	case stateRunning:
-		return styleSpin() + " ", styleRunning.Render(label)
-	case stateDone:
-		return styleCheck.Render("✓") + " ", styleDone.Render(label)
-	case stateFailed:
-		return styleCross.Render("✗") + " ", styleFailed.Render(label)
-	default:
-		return stylePending.Render("○") + " ", stylePending.Render(label)
+// formatElapsed renders a duration as MM:SS with a fixed 5-character width.
+func formatElapsed(d time.Duration) string {
+	total := int(d.Seconds())
+	if total < 0 {
+		total = 0
 	}
+	return fmt.Sprintf("%02d:%02d", total/60, total%60)
+}
+
+func renderItem(label string, st itemState, startTime time.Time, elapsed time.Duration, styleSpin func() string) string {
+	var timer, icon, text string
+
+	switch st {
+	case statePending:
+		timer = styleTimerOff.Render("--:--")
+		icon = stylePending.Render("○") + " "
+		text = stylePending.Render(label)
+	case stateRunning:
+		timer = styleTimer.Render(formatElapsed(time.Since(startTime)))
+		icon = styleSpin() + " "
+		text = styleRunning.Render(label)
+	case stateDone:
+		timer = styleTimerOff.Render(formatElapsed(elapsed))
+		icon = styleCheck.Render("✓") + " "
+		text = styleDone.Render(label)
+	case stateFailed:
+		timer = styleCross.Render(formatElapsed(elapsed))
+		icon = styleCross.Render("✗") + " "
+		text = styleFailed.Render(label)
+	}
+
+	return timer + " " + icon + text
 }
 
 func (m progressModel) View() string {
+	if m.panicErr != nil {
+		w := m.width
+		if w <= 0 {
+			w = 80
+		}
+		var sb strings.Builder
+		sb.WriteByte('\n')
+		sb.WriteString(styleFailed.Render("Something went wrong") + "\n")
+		sb.WriteByte('\n')
+		sb.WriteString(styleError.Width(w).Render(m.panicErr.Error()) + "\n")
+		return sb.String()
+	}
+
 	var sb strings.Builder
 	sb.WriteByte('\n')
 
 	for _, t := range m.tasks {
-		p, l := renderItem("", t.label, t.state, m.spinner.View)
-		sb.WriteString(p + l + "\n")
+		sb.WriteString(renderItem(t.label, t.state, t.startTime, t.elapsed, m.spinner.View) + "\n")
 
 		for _, s := range t.subs {
-			sp, sl := renderItem("", s.label, s.state, m.spinner.View)
-			sb.WriteString(styleIndent.Render(sp+sl) + "\n")
+			sb.WriteString(styleIndent.Render(renderItem(s.label, s.state, s.startTime, s.elapsed, m.spinner.View)) + "\n")
 		}
 	}
 
@@ -200,16 +259,33 @@ func (m progressModel) View() string {
 
 var stdout *Reporter
 
-func Start(f func()) {
+func Start(f spool.Spooler) {
+	flag.Parse()
+
 	stdout = NewReporter()
 
 	go func() {
 		defer stdout.Quit()
-		f()
+
+		src, wlk, err := source()
+		if err != nil {
+			Panic(err)
+		}
+
+		dst, err := target()
+		if err != nil {
+			Panic(err)
+		}
+
+		ingress := spool.New(src, dst)
+		err = ingress.ForEach(context.Background(), wlk, f)
+		if err != nil {
+			Panic(err)
+		}
 	}()
 
 	if err := stdout.Run(); err != nil {
-		panic(err)
+		os.Exit(1) //nolint
 	}
 }
 
@@ -231,11 +307,23 @@ func SubDone() { stdout.SubDone() }
 // SubFail marks the current subtask as failed.
 func SubFail(err error) { stdout.SubFail(err) }
 
+func Panic(err error) {
+	if stdout != nil {
+		stdout.ch <- msgPanic{err: err}
+		<-stdout.done
+	} else {
+		fmt.Fprintf(os.Stderr, "%s\n\n", styleFailed.Render("Something went wrong"))
+		fmt.Fprintf(os.Stderr, "%s\n", styleError.Render(err.Error()))
+	}
+	os.Exit(1)
+}
+
 // Reporter drives the BubbleTea progress UI. Call Run() in the main goroutine
 // and send progress events from a background goroutine.
 type Reporter struct {
-	ch chan tea.Msg
-	p  *tea.Program
+	ch   chan tea.Msg
+	p    *tea.Program
+	done chan struct{}
 }
 
 // NewReporter creates and wires a Reporter with a running BubbleTea program.
@@ -243,7 +331,7 @@ func NewReporter() *Reporter {
 	ch := make(chan tea.Msg, 64)
 	m := newProgressModel(ch)
 	p := tea.NewProgram(m, tea.WithOutput(os.Stderr))
-	return &Reporter{ch: ch, p: p}
+	return &Reporter{ch: ch, p: p, done: make(chan struct{})}
 }
 
 // Task begins a new top-level task entry.
@@ -269,6 +357,13 @@ func (r *Reporter) Quit() { r.ch <- msgQuit{} }
 
 // Run starts the BubbleTea event loop (blocking). Call this from main.
 func (r *Reporter) Run() error {
-	_, err := r.p.Run()
-	return err
+	finalModel, err := r.p.Run()
+	close(r.done)
+	if err != nil {
+		return err
+	}
+	if m, ok := finalModel.(progressModel); ok && m.panicErr != nil {
+		return m.panicErr
+	}
+	return nil
 }
