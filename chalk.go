@@ -46,6 +46,7 @@ const (
 type subItem struct {
 	label     string
 	state     itemState
+	err       error
 	startTime time.Time
 	elapsed   time.Duration
 }
@@ -53,6 +54,7 @@ type subItem struct {
 type taskItem struct {
 	label     string
 	state     itemState
+	err       error
 	subs      []subItem
 	startTime time.Time
 	elapsed   time.Duration
@@ -146,6 +148,7 @@ func (m progressModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if i := m.currentTask(); i >= 0 {
 			m.tasks[i].elapsed = time.Since(m.tasks[i].startTime)
 			m.tasks[i].state = stateFailed
+			m.tasks[i].err = msg.err
 		}
 		return m, pollCh(m.ch)
 
@@ -169,6 +172,7 @@ func (m progressModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if s := m.currentSub(); s >= 0 {
 				m.tasks[t].subs[s].elapsed = time.Since(m.tasks[t].subs[s].startTime)
 				m.tasks[t].subs[s].state = stateFailed
+				m.tasks[t].subs[s].err = msg.err
 			}
 		}
 		return m, pollCh(m.ch)
@@ -228,28 +232,32 @@ func renderItem(label string, st itemState, startTime time.Time, elapsed time.Du
 }
 
 func (m progressModel) View() string {
-	if m.panicErr != nil {
-		w := m.width
-		if w <= 0 {
-			w = 80
-		}
-		var sb strings.Builder
-		sb.WriteByte('\n')
-		sb.WriteString(styleFailed.Render("Something went wrong") + "\n")
-		sb.WriteByte('\n')
-		sb.WriteString(styleError.Width(w).Render(m.panicErr.Error()) + "\n")
-		return sb.String()
-	}
-
 	var sb strings.Builder
 	sb.WriteByte('\n')
 
 	for _, t := range m.tasks {
 		sb.WriteString(renderItem(t.label, t.state, t.startTime, t.elapsed, m.spinner.View) + "\n")
+		if t.err != nil {
+			sb.WriteString(styleIndent.Render(styleError.Render(t.err.Error())) + "\n")
+		}
 
 		for _, s := range t.subs {
 			sb.WriteString(styleIndent.Render(renderItem(s.label, s.state, s.startTime, s.elapsed, m.spinner.View)) + "\n")
+			if s.err != nil {
+				sb.WriteString(styleIndent.Render(styleIndent.Render(styleError.Render(s.err.Error()))) + "\n")
+			}
 		}
+	}
+
+	if m.panicErr != nil {
+		w := m.width
+		if w <= 0 {
+			w = 80
+		}
+		sb.WriteByte('\n')
+		sb.WriteString(styleFailed.Render("Something went wrong") + "\n")
+		sb.WriteByte('\n')
+		sb.WriteString(styleError.Width(w).Render(m.panicErr.Error()) + "\n")
 	}
 
 	return sb.String()
