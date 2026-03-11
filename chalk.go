@@ -4,12 +4,12 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/charmbracelet/bubbles/spinner"
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/fogfish/stream/spool"
 )
@@ -17,187 +17,28 @@ import (
 // ── Styles ────────────────────────────────────────────────────────────────────
 
 var (
-	stylePending  = lipgloss.NewStyle().Faint(true)
-	styleRunning  = lipgloss.NewStyle().Bold(true)
-	styleDone     = lipgloss.NewStyle().Strikethrough(true).Faint(true)
-	styleFailed   = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true)
-	styleError    = lipgloss.NewStyle().Faint(false)
-	styleIndent   = lipgloss.NewStyle().PaddingLeft(4)
-	styleCheck    = lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true)
-	styleCross    = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true)
-	styleSpinClr  = lipgloss.NewStyle().Foreground(lipgloss.Color("12"))
-	styleTimer    = lipgloss.NewStyle().Foreground(lipgloss.Color("12"))
-	styleTimerOff = lipgloss.NewStyle().Faint(true)
+	styleDone          = lipgloss.NewStyle().Faint(true)
+	styleFailed        = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true)
+	styleRunning       = lipgloss.NewStyle().Bold(true)
+	styleError         = lipgloss.NewStyle()
+	styleCheck         = lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true)
+	styleCross         = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true)
+	styleArrow         = lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true)
+	styleTimer         = lipgloss.NewStyle().Foreground(lipgloss.Color("12"))
+	styleTimerDuration = lipgloss.NewStyle().Faint(true)
+	styleTimerFail     = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
+	styleErrTitle      = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true)
 )
 
-// ── Item states ───────────────────────────────────────────────────────────────
+const indentUnit = "    " // 4 spaces per level
 
-type itemState int8
-
-const (
-	statePending itemState = iota
-	stateRunning
-	stateDone
-	stateFailed
-)
-
-// ── Data model ────────────────────────────────────────────────────────────────
-
-type subItem struct {
-	label     string
-	state     itemState
-	err       error
-	startTime time.Time
-	elapsed   time.Duration
-}
-
-type taskItem struct {
-	label     string
-	state     itemState
-	err       error
-	subs      []subItem
-	startTime time.Time
-	elapsed   time.Duration
-}
-
-// ── BubbleTea messages ────────────────────────────────────────────────────────
-
-type (
-	msgTaskStart struct{ label string }
-	msgTaskDone  struct{}
-	msgTaskFail  struct{ err error }
-	msgSubStart  struct{ label string }
-	msgSubDone   struct{}
-	msgSubFail   struct{ err error }
-	msgQuit      struct{}
-	msgPanic     struct{ err error }
-)
-
-// pollCh returns a Cmd that blocks until the next message arrives on ch.
-func pollCh(ch <-chan tea.Msg) tea.Cmd {
-	return func() tea.Msg { return <-ch }
-}
-
-// ── BubbleTea model ───────────────────────────────────────────────────────────
-
-type progressModel struct {
-	spinner  spinner.Model
-	tasks    []taskItem
-	ch       <-chan tea.Msg
-	panicErr error
-	width    int
-}
-
-func newProgressModel(ch <-chan tea.Msg) progressModel {
-	s := spinner.New()
-	s.Spinner = spinner.Dot
-	s.Style = styleSpinClr
-	return progressModel{spinner: s, ch: ch}
-}
-
-func (m progressModel) Init() tea.Cmd {
-	return tea.Batch(m.spinner.Tick, pollCh(m.ch))
-}
-
-// currentTask returns the index of the last task in stateRunning, or -1.
-func (m *progressModel) currentTask() int {
-	for i := len(m.tasks) - 1; i >= 0; i-- {
-		if m.tasks[i].state == stateRunning {
-			return i
-		}
+func indentStr(level int) string {
+	if level <= 0 {
+		return ""
 	}
-	return -1
+	return strings.Repeat(indentUnit, level)
 }
 
-// currentSub returns the index of the last subtask in stateRunning for the
-// current task, or -1.
-func (m *progressModel) currentSub() int {
-	t := m.currentTask()
-	if t < 0 {
-		return -1
-	}
-	subs := m.tasks[t].subs
-	for i := len(subs) - 1; i >= 0; i-- {
-		if subs[i].state == stateRunning {
-			return i
-		}
-	}
-	return -1
-}
-
-func (m progressModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-
-	case spinner.TickMsg:
-		var cmd tea.Cmd
-		m.spinner, cmd = m.spinner.Update(msg)
-		return m, cmd
-
-	case msgTaskStart:
-		m.tasks = append(m.tasks, taskItem{label: msg.label, state: stateRunning, startTime: time.Now()})
-		return m, pollCh(m.ch)
-
-	case msgTaskDone:
-		if i := m.currentTask(); i >= 0 {
-			m.tasks[i].elapsed = time.Since(m.tasks[i].startTime)
-			m.tasks[i].state = stateDone
-		}
-		return m, pollCh(m.ch)
-
-	case msgTaskFail:
-		if i := m.currentTask(); i >= 0 {
-			m.tasks[i].elapsed = time.Since(m.tasks[i].startTime)
-			m.tasks[i].state = stateFailed
-			m.tasks[i].err = msg.err
-		}
-		return m, pollCh(m.ch)
-
-	case msgSubStart:
-		if t := m.currentTask(); t >= 0 {
-			m.tasks[t].subs = append(m.tasks[t].subs, subItem{label: msg.label, state: stateRunning, startTime: time.Now()})
-		}
-		return m, pollCh(m.ch)
-
-	case msgSubDone:
-		if t := m.currentTask(); t >= 0 {
-			if s := m.currentSub(); s >= 0 {
-				m.tasks[t].subs[s].elapsed = time.Since(m.tasks[t].subs[s].startTime)
-				m.tasks[t].subs[s].state = stateDone
-			}
-		}
-		return m, pollCh(m.ch)
-
-	case msgSubFail:
-		if t := m.currentTask(); t >= 0 {
-			if s := m.currentSub(); s >= 0 {
-				m.tasks[t].subs[s].elapsed = time.Since(m.tasks[t].subs[s].startTime)
-				m.tasks[t].subs[s].state = stateFailed
-				m.tasks[t].subs[s].err = msg.err
-			}
-		}
-		return m, pollCh(m.ch)
-
-	case msgQuit:
-		return m, tea.Quit
-
-	case msgPanic:
-		m.panicErr = msg.err
-		return m, tea.Quit
-
-	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		return m, nil
-
-	case tea.KeyMsg:
-		if msg.String() == "ctrl+c" {
-			return m, tea.Quit
-		}
-	}
-
-	return m, nil
-}
-
-// formatElapsed renders a duration as MM:SS with a fixed 5-character width.
 func formatElapsed(d time.Duration) string {
 	total := int(d.Seconds())
 	if total < 0 {
@@ -206,172 +47,279 @@ func formatElapsed(d time.Duration) string {
 	return fmt.Sprintf("%02d:%02d", total/60, total%60)
 }
 
-func renderItem(label string, st itemState, startTime time.Time, elapsed time.Duration, styleSpin func() string) string {
-	var timer, icon, text string
+// ── Task entry ────────────────────────────────────────────────────────────────
 
-	switch st {
-	case statePending:
-		timer = styleTimerOff.Render("--:--")
-		icon = stylePending.Render("○") + " "
-		text = stylePending.Render(label)
-	case stateRunning:
-		timer = styleTimer.Render(formatElapsed(time.Since(startTime)))
-		icon = styleSpin() + " "
-		text = styleRunning.Render(label)
-	case stateDone:
-		timer = styleTimerOff.Render(formatElapsed(elapsed))
-		icon = styleCheck.Render("✓") + " "
-		text = styleDone.Render(label)
-	case stateFailed:
-		timer = styleCross.Render(formatElapsed(elapsed))
-		icon = styleCross.Render("✗") + " "
-		text = styleFailed.Render(label)
-	}
-
-	return timer + " " + icon + text
+type taskEntry struct {
+	level     int
+	label     string
+	startTime time.Time
+	anchored  bool // true once a running breadcrumb line has been printed
 }
 
-func (m progressModel) View() string {
-	var sb strings.Builder
-	sb.WriteByte('\n')
+// ── Reporter ──────────────────────────────────────────────────────────────────
 
-	for _, t := range m.tasks {
-		sb.WriteString(renderItem(t.label, t.state, t.startTime, t.elapsed, m.spinner.View) + "\n")
-		if t.err != nil {
-			sb.WriteString(styleIndent.Render(styleError.Render(t.err.Error())) + "\n")
-		}
+// spinner frames (braille dots)
+var spinFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
-		for _, s := range t.subs {
-			sb.WriteString(styleIndent.Render(renderItem(s.label, s.state, s.startTime, s.elapsed, m.spinner.View)) + "\n")
-			if s.err != nil {
-				sb.WriteString(styleIndent.Render(styleIndent.Render(styleError.Render(s.err.Error()))) + "\n")
+// Reporter manages classical terminal output with a live spinner for the active
+// task and a scrolling history of completed / failed tasks above it.
+type Reporter struct {
+	mu           sync.Mutex
+	stack        []taskEntry   // active task stack (index 0 = outermost)
+	stopCh       chan struct{} // signals spinner goroutine to stop
+	doneCh       chan struct{} // closed when spinner goroutine has exited
+	out          io.Writer
+	programStart time.Time // wall-clock anchor for the left-column offset
+}
+
+// NewReporter creates a Reporter that writes to stderr.
+func NewReporter() *Reporter {
+	return &Reporter{out: os.Stderr, programStart: time.Now()}
+}
+
+// spinDesc builds the spinner description line for task t.
+// Safe to call without the mutex — uses only the t copy and time.Since.
+func (r *Reporter) spinDesc(t taskEntry) string {
+	wallOff := formatElapsed(t.startTime.Sub(r.programStart))
+	taskElapsed := formatElapsed(time.Since(t.startTime))
+	return indentStr(t.level) + wallOff + " (" + taskElapsed + ") " + t.label
+}
+
+// startSpinnerLocked starts a background goroutine that renders a braille
+// spinner on the current line. We own every byte so clearing is reliable.
+// Caller must hold r.mu.
+func (r *Reporter) startSpinnerLocked() {
+	if len(r.stack) == 0 {
+		return
+	}
+	t := r.stack[len(r.stack)-1]
+
+	stopCh := make(chan struct{})
+	doneCh := make(chan struct{})
+	r.stopCh = stopCh
+	r.doneCh = doneCh
+
+	go func() {
+		defer close(doneCh)
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		frame := 0
+		for {
+			select {
+			case <-ticker.C:
+				desc := r.spinDesc(t)
+				fmt.Fprintf(r.out, "\r%s %s", spinFrames[frame%len(spinFrames)], desc)
+				frame++
+			case <-stopCh:
+				return
 			}
 		}
-	}
-
-	if m.panicErr != nil {
-		w := m.width
-		if w <= 0 {
-			w = 80
-		}
-		sb.WriteByte('\n')
-		sb.WriteString(styleFailed.Render("Something went wrong") + "\n")
-		sb.WriteByte('\n')
-		sb.WriteString(styleError.Width(w).Render(m.panicErr.Error()) + "\n")
-	}
-
-	return sb.String()
+	}()
 }
 
-// ── Public Reporter API ───────────────────────────────────────────────────────
+// stopSpinnerLocked stops the spinner goroutine and erases the spinner line.
+// It temporarily releases r.mu while waiting for the goroutine to exit, then
+// reacquires it. Caller must hold r.mu.
+func (r *Reporter) stopSpinnerLocked() {
+	if r.stopCh == nil {
+		return
+	}
+	stopCh := r.stopCh
+	doneCh := r.doneCh
+	r.stopCh = nil
+	r.doneCh = nil
+
+	close(stopCh)
+	r.mu.Unlock()
+	<-doneCh
+	// \r moves to column 0; \033[2K erases the entire line.
+	// Because we wrote every byte ourselves (no progressbar buffering),
+	// the cursor is guaranteed to be on the spinner line.
+	fmt.Fprint(r.out, "\r\033[2K")
+	r.mu.Lock()
+}
+
+// printRunningLocked prints a static "still running" breadcrumb for a parent
+// task whose spinner was displaced by a child. Called at most once per task.
+func (r *Reporter) printRunningLocked(t taskEntry) {
+	wallOff := formatElapsed(t.startTime.Sub(r.programStart))
+	fmt.Fprintln(r.out,
+		indentStr(t.level)+
+			styleTimer.Render(wallOff)+" "+
+			styleArrow.Render("▶")+" "+
+			styleRunning.Render(t.label))
+}
+
+func (r *Reporter) printDoneLocked(t taskEntry) {
+	now := time.Now()
+	wallOff := formatElapsed(now.Sub(r.programStart))
+	duration := formatElapsed(now.Sub(t.startTime))
+	fmt.Fprintln(r.out,
+		indentStr(t.level)+
+			styleTimer.Render(wallOff)+" "+
+			styleTimerDuration.Render("("+duration+")")+" "+
+			styleCheck.Render("✓")+" "+
+			styleDone.Render(t.label))
+}
+
+func (r *Reporter) printFailedLocked(t taskEntry, err error) {
+	now := time.Now()
+	wallOff := formatElapsed(now.Sub(r.programStart))
+	duration := formatElapsed(now.Sub(t.startTime))
+	fmt.Fprintln(r.out,
+		indentStr(t.level)+
+			styleTimerFail.Render(wallOff)+" "+
+			styleTimerDuration.Render("("+duration+")")+" "+
+			styleCross.Render("✗")+" "+
+			styleFailed.Render(t.label))
+	if err != nil {
+		pad := indentStr(t.level + 1)
+		cols := 80 - len(pad)
+		if cols < 20 {
+			cols = 20
+		}
+		wrapped := lipgloss.NewStyle().Width(cols).Render(err.Error())
+		for _, line := range strings.Split(wrapped, "\n") {
+			fmt.Fprintln(r.out, pad+styleError.Render(line))
+		}
+	}
+}
+
+// Task begins a new task at the given nesting level. Any currently active tasks
+// at the same or deeper level are automatically completed before the new task
+// starts, which simplifies error handling — callers do not need to guarantee a
+// matching Done/Fail on every code path.
+func (r *Reporter) Task(level int, label string, args ...any) {
+	if len(args) > 0 {
+		label = fmt.Sprintf(label, args...)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.stopSpinnerLocked()
+
+	// Auto-complete tasks at the same or deeper level.
+	for len(r.stack) > 0 && r.stack[len(r.stack)-1].level >= level {
+		top := r.stack[len(r.stack)-1]
+		r.stack = r.stack[:len(r.stack)-1]
+		r.printDoneLocked(top)
+	}
+
+	// Anchor any parent tasks that haven't been printed yet: emit a static
+	// "running" breadcrumb so the parent line is never silently erased.
+	for i := range r.stack {
+		if !r.stack[i].anchored {
+			r.printRunningLocked(r.stack[i])
+			r.stack[i].anchored = true
+		}
+	}
+
+	r.stack = append(r.stack, taskEntry{
+		level:     level,
+		label:     label,
+		startTime: time.Now(),
+	})
+	r.startSpinnerLocked()
+}
+
+// Done marks the current (innermost) task as successfully completed.
+func (r *Reporter) Done() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if len(r.stack) == 0 {
+		return
+	}
+	r.stopSpinnerLocked()
+	top := r.stack[len(r.stack)-1]
+	r.stack = r.stack[:len(r.stack)-1]
+	r.printDoneLocked(top)
+	r.startSpinnerLocked()
+}
+
+// Fail marks the current (innermost) task as failed. err is printed as an
+// indented paragraph beneath the task line.
+func (r *Reporter) Fail(err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if len(r.stack) == 0 {
+		return
+	}
+	r.stopSpinnerLocked()
+	top := r.stack[len(r.stack)-1]
+	r.stack = r.stack[:len(r.stack)-1]
+	r.printFailedLocked(top, err)
+	r.startSpinnerLocked()
+}
+
+// Quit stops the spinner and marks all remaining tasks as done. Call this when
+// all work has been completed.
+func (r *Reporter) Quit() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.stopSpinnerLocked()
+	for len(r.stack) > 0 {
+		top := r.stack[len(r.stack)-1]
+		r.stack = r.stack[:len(r.stack)-1]
+		r.printDoneLocked(top)
+	}
+}
+
+// ── Package-level API ─────────────────────────────────────────────────────────
 
 var stdout *Reporter
 
+// Start wires up the default Reporter, parses flags, and runs the provided
+// Spooler. It is the main entry-point for CLI tools built on this library.
 func Start(f spool.Spooler) {
 	flag.Parse()
 
 	stdout = NewReporter()
 
-	go func() {
-		defer stdout.Quit()
-
-		src, wlk, err := source()
-		if err != nil {
-			Panic(err)
-		}
-
-		dst, err := target()
-		if err != nil {
-			Panic(err)
-		}
-
-		ingress := spool.New(src, dst)
-		err = ingress.ForEach(context.Background(), wlk, f)
-		if err != nil {
-			Panic(err)
-		}
-	}()
-
-	if err := stdout.Run(); err != nil {
-		os.Exit(1) //nolint
+	src, wlk, err := source()
+	if err != nil {
+		Panic(err)
 	}
+
+	dst, err := target()
+	if err != nil {
+		Panic(err)
+	}
+
+	ingress := spool.New(src, dst)
+	if err = ingress.ForEach(context.Background(), wlk, f); err != nil {
+		Panic(err)
+	}
+
+	stdout.Quit()
 }
 
-// Task begins a new top-level task entry.
-func Task(label string) { stdout.Task(label) }
+// Task begins a new task at the given nesting level. Any active tasks at the
+// same or deeper level are auto-completed first.
+func Task(level int, label string, args ...any) { stdout.Task(level, label, args...) }
 
-// Done marks the current top-level task as completed (strikethrough).
+// Done marks the current task as successfully completed.
 func Done() { stdout.Done() }
 
-// Fail marks the current top-level task as failed.
+// Fail marks the current task as failed.
 func Fail(err error) { stdout.Fail(err) }
 
-// SubTask begins a new sub-item under the current top-level task.
-func SubTask(label string) { stdout.SubTask(label) }
-
-// SubDone marks the current subtask as completed (strikethrough).
-func SubDone() { stdout.SubDone() }
-
-// SubFail marks the current subtask as failed.
-func SubFail(err error) { stdout.SubFail(err) }
-
+// Panic prints a fatal error, fails all pending tasks, and exits with code 1.
 func Panic(err error) {
 	if stdout != nil {
-		stdout.ch <- msgPanic{err: err}
-		<-stdout.done
-	} else {
-		fmt.Fprintf(os.Stderr, "%s\n\n", styleFailed.Render("Something went wrong"))
-		fmt.Fprintf(os.Stderr, "%s\n", styleError.Render(err.Error()))
+		stdout.mu.Lock()
+		stdout.stopSpinnerLocked()
+		for len(stdout.stack) > 0 {
+			top := stdout.stack[len(stdout.stack)-1]
+			stdout.stack = stdout.stack[:len(stdout.stack)-1]
+			stdout.printFailedLocked(top, nil)
+		}
+		stdout.mu.Unlock()
 	}
+
+	fmt.Fprintln(os.Stderr, "\n"+styleErrTitle.Render("Error")+"\n")
+	fmt.Fprintln(os.Stderr, styleError.Render(err.Error()))
 	os.Exit(1)
-}
-
-// Reporter drives the BubbleTea progress UI. Call Run() in the main goroutine
-// and send progress events from a background goroutine.
-type Reporter struct {
-	ch   chan tea.Msg
-	p    *tea.Program
-	done chan struct{}
-}
-
-// NewReporter creates and wires a Reporter with a running BubbleTea program.
-func NewReporter() *Reporter {
-	ch := make(chan tea.Msg, 64)
-	m := newProgressModel(ch)
-	p := tea.NewProgram(m, tea.WithOutput(os.Stderr))
-	return &Reporter{ch: ch, p: p, done: make(chan struct{})}
-}
-
-// Task begins a new top-level task entry.
-func (r *Reporter) Task(label string) { r.ch <- msgTaskStart{label: label} }
-
-// Done marks the current top-level task as completed (strikethrough).
-func (r *Reporter) Done() { r.ch <- msgTaskDone{} }
-
-// Fail marks the current top-level task as failed.
-func (r *Reporter) Fail(err error) { r.ch <- msgTaskFail{err: err} }
-
-// SubTask begins a new sub-item under the current top-level task.
-func (r *Reporter) SubTask(label string) { r.ch <- msgSubStart{label: label} }
-
-// SubDone marks the current subtask as completed (strikethrough).
-func (r *Reporter) SubDone() { r.ch <- msgSubDone{} }
-
-// SubFail marks the current subtask as failed.
-func (r *Reporter) SubFail(err error) { r.ch <- msgSubFail{err: err} }
-
-// Quit tears down the BubbleTea program. Call this after all work is done.
-func (r *Reporter) Quit() { r.ch <- msgQuit{} }
-
-// Run starts the BubbleTea event loop (blocking). Call this from main.
-func (r *Reporter) Run() error {
-	finalModel, err := r.p.Run()
-	close(r.done)
-	if err != nil {
-		return err
-	}
-	if m, ok := finalModel.(progressModel); ok && m.panicErr != nil {
-		return m.panicErr
-	}
-	return nil
 }
