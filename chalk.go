@@ -78,12 +78,12 @@ func NewReporter() *Reporter {
 	return &Reporter{out: os.Stderr, programStart: time.Now()}
 }
 
-// spinDesc builds the spinner description line for task t.
+// spinPrefix builds the timer portion of the spinner line (no label).
 // Safe to call without the mutex — uses only the t copy and time.Since.
-func (r *Reporter) spinDesc(t taskEntry) string {
+func (r *Reporter) spinPrefix(t taskEntry) string {
 	wallOff := formatElapsed(t.startTime.Sub(r.programStart))
 	taskElapsed := formatElapsed(time.Since(t.startTime))
-	return indentStr(t.level) + wallOff + " (" + taskElapsed + ") " + t.label
+	return indentStr(t.level) + styleTimer.Render(wallOff) + " " + styleTimerDuration.Render("("+taskElapsed+")")
 }
 
 // startSpinnerLocked starts a background goroutine that renders a braille
@@ -108,8 +108,8 @@ func (r *Reporter) startSpinnerLocked() {
 		for {
 			select {
 			case <-ticker.C:
-				desc := r.spinDesc(t)
-				fmt.Fprintf(r.out, "\r%s %s", spinFrames[frame%len(spinFrames)], desc)
+				prefix := r.spinPrefix(t)
+				fmt.Fprintf(r.out, "\r%s %s %s", prefix, spinFrames[frame%len(spinFrames)], t.label)
 				frame++
 			case <-stopCh:
 				return
