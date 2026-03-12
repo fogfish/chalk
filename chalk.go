@@ -28,6 +28,7 @@ var (
 	styleTimerDuration = lipgloss.NewStyle().Faint(true)
 	styleTimerFail     = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
 	styleErrTitle      = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true)
+	styleText          = lipgloss.NewStyle().Faint(true)
 )
 
 const indentUnit = "    " // 4 spaces per level
@@ -253,6 +254,28 @@ func (r *Reporter) Fail(err error) {
 	r.startSpinnerLocked()
 }
 
+// Printf prints a formatted, multi-line message indented one level deeper than
+// the current task. The spinner is stopped for the duration of the write and
+// restarted afterwards so the output line does not get overwritten.
+func (r *Reporter) Printf(format string, args ...any) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.stopSpinnerLocked()
+
+	level := -1
+	if len(r.stack) > 0 {
+		level = r.stack[len(r.stack)-1].level
+	}
+	pad := indentStr(level + 1)
+	text := fmt.Sprintf(format, args...)
+	for _, line := range strings.Split(text, "\n") {
+		fmt.Fprintln(r.out, pad+styleText.Render(line))
+	}
+
+	r.startSpinnerLocked()
+}
+
 // Quit stops the spinner and marks all remaining tasks as done. Call this when
 // all work has been completed.
 func (r *Reporter) Quit() {
@@ -305,6 +328,9 @@ func Done() { stdout.Done() }
 
 // Fail marks the current task as failed.
 func Fail(err error) { stdout.Fail(err) }
+
+// Printf prints a formatted, multi-line message indented under the current task.
+func Printf(format string, args ...any) { stdout.Printf(format, args...) }
 
 // Panic prints a fatal error, fails all pending tasks, and exits with code 1.
 func Panic(err error) {
