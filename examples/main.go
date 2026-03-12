@@ -18,7 +18,7 @@ func main() {
 
 			chalk.Task(0, "Reading")
 			time.Sleep(1 * time.Second)
-			chalk.Fail(fmt.Errorf("Unable to read data"))
+			chalk.Fail(fmt.Errorf("Unable to read data becuase something went wrong and we need to report it to the user given that we have a nice way to do it."))
 
 			chalk.Task(0, "Doing something")
 			for i := 1; i <= 10; i++ {
