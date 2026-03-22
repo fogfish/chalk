@@ -20,15 +20,16 @@ import (
 )
 
 func process(ctx context.Context, path string, r io.Reader, w io.Writer) error {
-  chalk.Task(path)
+  chalk.Task(0, path)
 
-  chalk.SubTask("read")
+  // Subtask at level 1
+  chalk.Task(1, "read")
   // ... read from fs
-  chalk.SubDone()
+  chalk.Done()
 
-  chalk.SubTask("transform")
+  chalk.Task(1, "transform")
   // ... do work
-  chalk.SubDone()
+  chalk.Done()
 
   chalk.Done()
   return nil

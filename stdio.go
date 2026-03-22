@@ -1,3 +1,11 @@
+//
+// Copyright (C) 2026 Dmitry Kolesnikov
+//
+// This file may be modified and distributed under the terms
+// of the MIT license.  See the LICENSE file for details.
+// https://github.com/fogfish/chalk
+//
+
 package chalk
 
 import (
@@ -14,9 +22,11 @@ import (
 )
 
 var (
-	dirI  = flag.String("I", "", "input directory")
-	dirO  = flag.String("O", "", "output directory")
-	fileO = flag.String("o", "", "output file")
+	dirI        = flag.String("I", "", "input directory")
+	dirO        = flag.String("O", "", "output directory")
+	fileO       = flag.String("o", "", "output file")
+	flagNoTTY   = flag.Bool("no-tty", false, "disable TTY output (structured log mode)")
+	flagNoColor = flag.Bool("no-color", false, "disable color output in TTY mode")
 )
 
 func source() (spool.FileSystem, spool.Walker, error) {
