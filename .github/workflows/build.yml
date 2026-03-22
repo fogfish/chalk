@@ -1,0 +1,61 @@
+##
+## Build the main branch
+##
+name: build
+on:
+  push:
+    branches:
+      - main
+      - /refs/heads/main
+
+jobs:
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - uses: actions/checkout@v4
+     
+      - name: go build
+        run: |
+          go build ./...
+    
+      - name: go test
+        run: |
+          mkdir -p /tmp/softcmd
+          mkdir -p /tmp/cmd
+          go test -v -coverprofile=profile.cov $(go list ./... | grep -v /examples/)
+
+      - uses: shogo82148/actions-goveralls@v1
+        continue-on-error: true
+        with:
+          path-to-profile: profile.cov
+
+      - name: Determine version increment type
+        id: increment
+        run: |
+          if [[ "${{ github.event.head_commit.message }}" == *"[X.y.z]"* ]]; then
+            echo "type=major" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.event.head_commit.message }}" == *"[x.Y.z]"* ]]; then
+            echo "type=minor" >> $GITHUB_OUTPUT
+          else
+            echo "type=patch" >> $GITHUB_OUTPUT
+          fi
+
+      - uses: reecetech/version-increment@2023.10.2
+        id: version
+        with:
+          scheme: semver
+          increment: ${{ steps.increment.outputs.type }}
+
+      - name: publish
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git tag ${{ steps.version.outputs.v-version }}
+          git push origin -u ${{ steps.version.outputs.v-version }}
+
