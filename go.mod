@@ -5,6 +5,7 @@ go 1.25.0
 require (
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/fogfish/stream v1.3.6
+	github.com/goccy/go-yaml v1.19.2
 	golang.org/x/term v0.41.0
 )
 
