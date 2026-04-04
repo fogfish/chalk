@@ -19,26 +19,26 @@ import (
 
 func main() {
 	chalk.Start(
-		func(context.Context, string, io.Reader, io.Writer) error {
-			chalk.Task(0, "Configure")
+		func(ctx context.Context, _ string, _ io.Reader, _ io.Writer) error {
+			chalk.Task(ctx, "Configure")
 			time.Sleep(2 * time.Second)
 			chalk.Done()
 
-			chalk.Task(0, "Reading")
+			chalk.Task(ctx, "Reading")
 			time.Sleep(1 * time.Second)
 			chalk.Fail(fmt.Errorf("unable to read data becuase something went wrong and we need to report it to the user given that we have a nice way to do it"))
 
-			chalk.Task(0, "Doing something")
+			chalk.Task(ctx, "Doing something")
 			for i := 1; i <= 10; i++ {
-				chalk.Task(1, fmt.Sprintf("Doing #%d", i))
+				chalk.Task(chalk.Sub(ctx), fmt.Sprintf("Doing #%d", i))
 				time.Sleep(500 * time.Millisecond)
 				chalk.Done(fmt.Sprintf("(foobar %d)", i))
 			}
 			chalk.Done()
 
-			chalk.Task(0, "Doing something else")
+			chalk.Task(ctx, "Doing something else")
 			for i := 1; i <= 3; i++ {
-				chalk.Task(1, fmt.Sprintf("Something else #%d", i))
+				chalk.Task(chalk.Sub(ctx), fmt.Sprintf("Something else #%d", i))
 				time.Sleep(500 * time.Millisecond)
 				chalk.Printf("Some long text just to explain very complex operations with #%d. The text is reported to the user given that we have a nice way to do it using multiple lines.", i)
 				chalk.Done()

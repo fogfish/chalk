@@ -28,7 +28,7 @@ func Recover[T any](key string, def T) T {
 	hash.Write([]byte(key))
 	hval := hash.Sum(nil)
 
-	path := filepath.Join(*cache, fmt.Sprintf("%x", hval))
+	path := filepath.Join(*cache, fmt.Sprintf("%x.yaml", hval))
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		return def
 	}
@@ -73,7 +73,7 @@ func Commit[T any](key string, val T) {
 	hash.Write([]byte(key))
 	hval := hash.Sum(nil)
 
-	path := filepath.Join(*cache, fmt.Sprintf("%x", hval))
+	path := filepath.Join(*cache, fmt.Sprintf("%x.yaml", hval))
 	fd, err := os.Create(path)
 	if err != nil {
 		return

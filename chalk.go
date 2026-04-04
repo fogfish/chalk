@@ -21,6 +21,22 @@ import (
 	"golang.org/x/term"
 )
 
+// ── Context level ───────────────────────────────────────────────────────────
+
+type contextLevelKey struct{}
+
+// Sub returns a child context with the task nesting level incremented by one.
+// Pass the returned context to Task to start a nested sub-task.
+func Sub(ctx context.Context) context.Context {
+	level, _ := ctx.Value(contextLevelKey{}).(int)
+	return context.WithValue(ctx, contextLevelKey{}, level+1)
+}
+
+func levelFromContext(ctx context.Context) int {
+	level, _ := ctx.Value(contextLevelKey{}).(int)
+	return level
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 const indentUnit = "    " // 4 spaces per level
@@ -111,10 +127,20 @@ type Reporter struct {
 	p     printer
 }
 
-// NewReporter creates a Reporter that writes to stderr, automatically selecting
+// Init creates a Reporter that writes to stderr, automatically selecting
 // the ttyPrinter or logPrinter strategy based on whether stderr is a terminal.
 // If NoTTY has been called, logPrinter is always used regardless of the terminal.
-func NewReporter() *Reporter {
+func Init() *Reporter {
+	flag.Parse()
+
+	if *flagNoTTY {
+		noTTY = true
+	}
+
+	if *flagNoColor {
+		noColor = true
+	}
+
 	r := &Reporter{}
 	start := time.Now()
 	if !noTTY && term.IsTerminal(int(os.Stderr.Fd())) {
@@ -125,14 +151,18 @@ func NewReporter() *Reporter {
 	} else {
 		r.p = &logPrinter{}
 	}
+
+	stdout = r
 	return r
 }
 
-// Task begins a new task at the given nesting level. Any currently active tasks
-// at the same or deeper level are automatically completed before the new task
-// starts, which simplifies error handling — callers do not need to guarantee a
-// matching Done/Fail on every code path.
-func (r *Reporter) Task(level int, label string, args ...any) {
+// Task begins a new task at the nesting level carried by ctx. Use WithLevel to
+// produce a context for sub-tasks. Any currently active tasks at the same or
+// deeper level are automatically completed before the new task starts, which
+// simplifies error handling — callers do not need to guarantee a matching
+// Done/Fail on every code path.
+func (r *Reporter) Task(ctx context.Context, label string, args ...any) {
+	level := levelFromContext(ctx)
 	if len(args) > 0 {
 		label = fmt.Sprintf(label, args...)
 	}
@@ -238,6 +268,50 @@ func (r *Reporter) Quit() {
 	}
 }
 
+// Sub returns a child context with the task nesting level incremented by one.
+// Pass the returned context to Task to start a nested sub-task.
+func (r *Reporter) Sub(ctx context.Context) context.Context { return Sub(ctx) }
+
+// ── Stdio interface ───────────────────────────────────────────────────────────
+
+// Stdio is the progress-reporting interface implemented by *Reporter.
+// Accept Stdio in your own APIs to decouple callers from this package:
+// any value whose method set matches Stdio satisfies the interface without
+// importing chalk.
+type Stdio interface {
+	Sub(ctx context.Context) context.Context
+	Task(ctx context.Context, label string, args ...any)
+	Done(suffix ...string)
+	Fail(err error)
+	Printf(format string, args ...any)
+}
+
+var Stdout Proxy
+
+type Proxy struct{}
+
+func (Proxy) Sub(ctx context.Context) context.Context { return Sub(ctx) }
+func (Proxy) Task(ctx context.Context, label string, args ...any) {
+	if stdout != nil {
+		stdout.Task(ctx, label, args...)
+	}
+}
+func (Proxy) Done(suffix ...string) {
+	if stdout != nil {
+		stdout.Done(suffix...)
+	}
+}
+func (Proxy) Fail(err error) {
+	if stdout != nil {
+		stdout.Fail(err)
+	}
+}
+func (Proxy) Printf(format string, args ...any) {
+	if stdout != nil {
+		stdout.Printf(format, args...)
+	}
+}
+
 // ── Package-level API ─────────────────────────────────────────────────────────
 
 var stdout *Reporter
@@ -255,17 +329,7 @@ func NoColor() { noColor = true }
 // Start wires up the default Reporter, parses flags, and runs the provided
 // Spooler. It is the main entry-point for CLI tools built on this library.
 func Start(f spool.Spooler) {
-	flag.Parse()
-
-	if *flagNoTTY {
-		noTTY = true
-	}
-
-	if *flagNoColor {
-		noColor = true
-	}
-
-	stdout = NewReporter()
+	Init()
 
 	src, wlk, err := source()
 	if err != nil {
@@ -285,9 +349,10 @@ func Start(f spool.Spooler) {
 	stdout.Quit()
 }
 
-// Task begins a new task at the given nesting level. Any active tasks at the
-// same or deeper level are auto-completed first.
-func Task(level int, label string, args ...any) { stdout.Task(level, label, args...) }
+// Task begins a new task at the nesting level carried by ctx. Use WithLevel to
+// produce a context for sub-tasks. Any active tasks at the same or deeper level
+// are auto-completed first.
+func Task(ctx context.Context, label string, args ...any) { stdout.Task(ctx, label, args...) }
 
 // Done marks the current task as successfully completed.
 // An optional note is appended after the task label, e.g. Done("(hits 50)").
