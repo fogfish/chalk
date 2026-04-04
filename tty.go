@@ -125,6 +125,7 @@ func (p *ttyPrinter) printRunning(t taskEntry) {
 	wallOff := formatWallClock(t.startTime.Sub(p.programStart))
 	fmt.Fprintln(p.out,
 		styleTimer.Render(wallOff)+" "+
+			strings.Repeat(" ", 8)+
 			indentStr(t.level)+
 			styleArrow.Render("▶")+" "+
 			styleRunning.Render(t.label))
