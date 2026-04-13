@@ -24,6 +24,7 @@ import (
 var (
 	dirI        = flag.String("I", "", "input directory")
 	dirO        = flag.String("O", "", "output directory")
+	extOverride = flag.String("extension", "", "override file extension for output files")
 	fileO       = flag.String("o", "", "output file")
 	cache       = flag.String("cache", "", "directory to cache checkpoints")
 	flagNoTTY   = flag.Bool("no-tty", false, "disable TTY output (structured log mode)")
