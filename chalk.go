@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/fogfish/opts"
 	"github.com/fogfish/stream/spool"
 	"golang.org/x/term"
 )
@@ -341,7 +342,11 @@ func Start(f spool.Spooler) {
 		Panic(err)
 	}
 
-	ingress := spool.New(src, dst)
+	var opts []opts.Option[spool.Spool]
+	if extOverride != nil && *extOverride != "" {
+		opts = append(opts, spool.WithFileExt(*extOverride))
+	}
+	ingress := spool.New(src, dst, opts...)
 	if err = ingress.ForEach(context.Background(), wlk, f); err != nil {
 		Panic(err)
 	}
