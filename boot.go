@@ -96,6 +96,7 @@ func Start(f spool.Spooler) {
 	}
 	ingress := spool.New(src, dst, opts...)
 
+	//nolint:staticcheck // SA1029: We use string keys to allow zero-dep discovery
 	ctx := context.WithValue(context.Background(), ctxkey, stdout)
 
 	if err = ingress.ForEach(ctx, wlk, f); err != nil {
