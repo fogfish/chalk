@@ -29,6 +29,7 @@ var (
 	cache       = flag.String("cache", "", "directory to cache checkpoints")
 	flagNoTTY   = flag.Bool("no-tty", false, "disable TTY output (structured log mode)")
 	flagNoColor = flag.Bool("no-color", false, "disable color output in TTY mode")
+	flagSilent  = flag.Bool("silent", false, "disable all output")
 )
 
 func source() (spool.FileSystem, spool.Walker, error) {

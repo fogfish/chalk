@@ -24,6 +24,7 @@ const ctxkey = "github.com/fogfish/chalk"
 var stdout *Reporter
 var noTTY bool
 var noColor bool
+var silent bool
 
 // NoTTY forces log-mode output (structured slog records, no colour, no spinner)
 // even when stderr is an interactive terminal. Must be called before Start.
@@ -32,6 +33,9 @@ func NoTTY() { noTTY = true }
 // NoColor disables color output in TTY mode, using plain black & white styles.
 // Must be called before Start.
 func NoColor() { noColor = true }
+
+// Silent disables all output, including errors. Must be called before Start.
+func Silent() { silent = true }
 
 // Init creates a Reporter that writes to stderr, automatically selecting
 // the ttyPrinter or logPrinter strategy based on whether stderr is a terminal.
@@ -47,14 +51,23 @@ func Init() *Reporter {
 		noColor = true
 	}
 
+	if *flagSilent {
+		silent = true
+	}
+
 	r := &Reporter{}
 	start := time.Now()
-	if !noTTY && term.IsTerminal(os.Stderr.Fd()) {
+	switch {
+	case silent:
+		r.p = &silentPrinter{}
+	case noTTY:
+		r.p = &logPrinter{}
+	case term.IsTerminal(os.Stderr.Fd()):
 		if noColor {
 			bwStyles()
 		}
 		r.p = newTTYPrinter(os.Stderr, start, &r.mu)
-	} else {
+	default:
 		r.p = &logPrinter{}
 	}
 
