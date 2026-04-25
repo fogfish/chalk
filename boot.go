@@ -19,7 +19,7 @@ import (
 	"github.com/fogfish/stream/spool"
 )
 
-const ctxkey = "chalkboard"
+const ctxkey = "io.console.chalkboard"
 
 var stdout *Reporter
 var noTTY bool
