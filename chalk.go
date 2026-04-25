@@ -10,16 +10,11 @@ package chalk
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"os"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/fogfish/opts"
-	"github.com/fogfish/stream/spool"
-	"golang.org/x/term"
 )
 
 // ── Context level ───────────────────────────────────────────────────────────
@@ -126,35 +121,6 @@ type Reporter struct {
 	mu    sync.Mutex
 	stack []taskEntry // active task stack (index 0 = outermost)
 	p     printer
-}
-
-// Init creates a Reporter that writes to stderr, automatically selecting
-// the ttyPrinter or logPrinter strategy based on whether stderr is a terminal.
-// If NoTTY has been called, logPrinter is always used regardless of the terminal.
-func Init() *Reporter {
-	flag.Parse()
-
-	if *flagNoTTY {
-		noTTY = true
-	}
-
-	if *flagNoColor {
-		noColor = true
-	}
-
-	r := &Reporter{}
-	start := time.Now()
-	if !noTTY && term.IsTerminal(int(os.Stderr.Fd())) {
-		if noColor {
-			bwStyles()
-		}
-		r.p = newTTYPrinter(os.Stderr, start, &r.mu)
-	} else {
-		r.p = &logPrinter{}
-	}
-
-	stdout = r
-	return r
 }
 
 // Task begins a new task at the nesting level carried by ctx. Use WithLevel to
@@ -314,45 +280,6 @@ func (Proxy) Printf(format string, args ...any) {
 }
 
 // ── Package-level API ─────────────────────────────────────────────────────────
-
-var stdout *Reporter
-var noTTY bool
-var noColor bool
-
-// NoTTY forces log-mode output (structured slog records, no colour, no spinner)
-// even when stderr is an interactive terminal. Must be called before Start.
-func NoTTY() { noTTY = true }
-
-// NoColor disables color output in TTY mode, using plain black & white styles.
-// Must be called before Start.
-func NoColor() { noColor = true }
-
-// Start wires up the default Reporter, parses flags, and runs the provided
-// Spooler. It is the main entry-point for CLI tools built on this library.
-func Start(f spool.Spooler) {
-	Init()
-
-	src, wlk, err := source()
-	if err != nil {
-		Panic(err)
-	}
-
-	dst, err := target()
-	if err != nil {
-		Panic(err)
-	}
-
-	var opts []opts.Option[spool.Spool]
-	if extOverride != nil && *extOverride != "" {
-		opts = append(opts, spool.WithFileExt(*extOverride))
-	}
-	ingress := spool.New(src, dst, opts...)
-	if err = ingress.ForEach(context.Background(), wlk, f); err != nil {
-		Panic(err)
-	}
-
-	stdout.Quit()
-}
 
 // Task begins a new task at the nesting level carried by ctx. Use WithLevel to
 // produce a context for sub-tasks. Any active tasks at the same or deeper level

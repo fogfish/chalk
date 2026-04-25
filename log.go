@@ -56,3 +56,26 @@ func (p *logPrinter) printPanic(err error) {
 	slog.Error("fatal", "error", err.Error())
 	os.Exit(1)
 }
+
+// ── logPrinter ────────────────────────────────────────────────────────────────
+
+// logPrinter is the strategy for non-interactive environments (pipes, CI).
+// It emits structured slog records — no colour, no spinner.
+type silentPrinter struct{}
+
+func (p *silentPrinter) pauseLocked()              {}
+func (p *silentPrinter) resumeLocked(_ *taskEntry) {}
+
+// printRunning is called when a parent task's spinner is displaced by a child.
+// In log mode this is the right moment to record that the parent is in progress.
+func (p *silentPrinter) printRunning(t taskEntry) {}
+
+func (p *silentPrinter) printDone(t taskEntry) {}
+
+func (p *silentPrinter) printFailed(t taskEntry, err error) {}
+
+func (p *silentPrinter) printText(_ int, text string) {}
+
+func (p *silentPrinter) printPanic(err error) {
+	os.Exit(1)
+}
