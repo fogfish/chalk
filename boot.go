@@ -21,7 +21,7 @@ import (
 
 const ctxkey = "io.console.chalkboard"
 
-var stdout *Reporter
+var stdout *Reporter = &Reporter{p: &logPrinter{}}
 var noTTY bool
 var noColor bool
 var silent bool
