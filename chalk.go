@@ -284,17 +284,33 @@ func (Proxy) Printf(format string, args ...any) {
 // Task begins a new task at the nesting level carried by ctx. Use WithLevel to
 // produce a context for sub-tasks. Any active tasks at the same or deeper level
 // are auto-completed first.
-func Task(ctx context.Context, label string, args ...any) { stdout.Task(ctx, label, args...) }
+func Task(ctx context.Context, label string, args ...any) {
+	if stdout != nil {
+		stdout.Task(ctx, label, args...)
+	}
+}
 
 // Done marks the current task as successfully completed.
 // An optional note is appended after the task label, e.g. Done("(hits 50)").
-func Done(suffix ...string) { stdout.Done(suffix...) }
+func Done(suffix ...string) {
+	if stdout != nil {
+		stdout.Done(suffix...)
+	}
+}
 
 // Fail marks the current task as failed.
-func Fail(err error) { stdout.Fail(err) }
+func Fail(err error) {
+	if stdout != nil {
+		stdout.Fail(err)
+	}
+}
 
 // Printf prints a formatted message indented under the current task.
-func Printf(format string, args ...any) { stdout.Printf(format, args...) }
+func Printf(format string, args ...any) {
+	if stdout != nil {
+		stdout.Printf(format, args...)
+	}
+}
 
 // Panic fails all pending tasks and exits with code 1.
 func Panic(err error) {
