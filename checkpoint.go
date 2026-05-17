@@ -35,12 +35,14 @@ func Recover[T any](key string, def T) T {
 
 	fd, err := os.Open(path)
 	if err != nil {
+		Printf("unable to read cache file: %s, %v\n", path, err)
 		return def
 	}
 	defer fd.Close()
 
 	b, err := io.ReadAll(fd)
 	if err != nil {
+		Printf("unable to read cache file: %s, %v\n", path, err)
 		return def
 	}
 
@@ -49,10 +51,12 @@ func Recover[T any](key string, def T) T {
 	if rv.Kind() == reflect.Ptr {
 		rv.Set(reflect.New(rv.Type().Elem()))
 		if err := yaml.Unmarshal(b, rv.Interface()); err != nil {
+			Printf("unable to decode cache file: %s, %v\n", path, err)
 			return def
 		}
 	} else {
 		if err := yaml.Unmarshal(b, &val); err != nil {
+			Printf("unable to decode cache file: %s, %v\n", path, err)
 			return def
 		}
 	}
@@ -60,13 +64,13 @@ func Recover[T any](key string, def T) T {
 	return val
 }
 
-func Commit[T any](key string, val T) {
+func Commit[T any](key string, val T) error {
 	if *cache == "" {
-		return
+		return nil
 	}
 
 	if err := os.MkdirAll(*cache, 0755); err != nil && !os.IsExist(err) {
-		return
+		return err
 	}
 
 	hash := sha1.New()
@@ -76,9 +80,14 @@ func Commit[T any](key string, val T) {
 	path := filepath.Join(*cache, fmt.Sprintf("%x.yaml", hval))
 	fd, err := os.Create(path)
 	if err != nil {
-		return
+		return err
 	}
 	defer fd.Close()
 
-	yaml.NewEncoder(fd, yaml.UseLiteralStyleIfMultiline(true)).Encode(val)
+	err = yaml.NewEncoder(fd, yaml.UseLiteralStyleIfMultiline(true)).Encode(val)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
