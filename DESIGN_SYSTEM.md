@@ -371,12 +371,12 @@ Always pass `"(cached)"` as the Done suffix when a step returns early from the c
 
 ```go
 chalk.Task(sub, "Generating embeddings")
-if vec := chalk.Recover[[]float32](key, nil); vec != nil {
+if vec := checkpoint.Recover[[]float32](key, nil); vec != nil {
     chalk.Done("(cached)")    // ✓ visible, labelled skip
     return vec, nil
 }
 // ... real work ...
-chalk.Commit(key, vec)
+checkpoint.Commit(key, vec)
 chalk.Done(fmt.Sprintf("(%d dims)", len(vec)))
 ```
 

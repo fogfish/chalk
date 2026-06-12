@@ -15,19 +15,21 @@ package main
 
 import (
   "context"
+  "io"
 
   "github.com/fogfish/chalk"
+  "github.com/fogfish/chalk/rt/cli"
 )
 
 func process(ctx context.Context, path string, r io.Reader, w io.Writer) error {
-  chalk.Task(0, path)
+  chalk.Task(ctx, path)
 
   // Subtask at level 1
-  chalk.Task(1, "read")
+  chalk.Task(chalk.Sub(ctx), "read")
   // ... read from fs
   chalk.Done()
 
-  chalk.Task(1, "transform")
+  chalk.Task(chalk.Sub(ctx), "transform")
   // ... do work
   chalk.Done()
 
@@ -36,7 +38,7 @@ func process(ctx context.Context, path string, r io.Reader, w io.Writer) error {
 }
 
 func main() {
-  chalk.Start(process)
+  cli.Start(process)
 }
 ```
 

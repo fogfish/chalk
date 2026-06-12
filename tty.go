@@ -21,35 +21,56 @@ import (
 
 // ── Styles ────────────────────────────────────────────────────────────────────
 
-var (
-	styleDone          = lipgloss.NewStyle().Faint(true)
-	styleFailed        = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true)
-	styleRunning       = lipgloss.NewStyle().Bold(true)
-	styleError         = lipgloss.NewStyle()
-	styleCheck         = lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true)
-	styleCross         = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true)
-	styleArrow         = lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true)
-	styleTimer         = lipgloss.NewStyle().Foreground(lipgloss.Color("12"))
-	styleTimerDuration = lipgloss.NewStyle().Faint(true)
-	styleTimerFail     = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
-	styleErrTitle      = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true)
-	styleText          = lipgloss.NewStyle().Faint(true)
-)
+// styles holds the lipgloss styles used by a single ttyPrinter instance.
+// Each Reporter built with WithColor(false) gets its own black & white
+// styles, independent of any other Reporter in the same process.
+type styles struct {
+	done          lipgloss.Style
+	failed        lipgloss.Style
+	running       lipgloss.Style
+	errorText     lipgloss.Style
+	check         lipgloss.Style
+	cross         lipgloss.Style
+	arrow         lipgloss.Style
+	timer         lipgloss.Style
+	timerDuration lipgloss.Style
+	timerFail     lipgloss.Style
+	errTitle      lipgloss.Style
+	text          lipgloss.Style
+}
 
-// bwStyles overrides the package-level style vars with plain black & white styles.
-func bwStyles() {
-	styleDone = lipgloss.NewStyle().Faint(true)
-	styleFailed = lipgloss.NewStyle().Bold(true)
-	styleRunning = lipgloss.NewStyle().Bold(true)
-	styleError = lipgloss.NewStyle()
-	styleCheck = lipgloss.NewStyle().Bold(true)
-	styleCross = lipgloss.NewStyle().Bold(true)
-	styleArrow = lipgloss.NewStyle().Bold(true)
-	styleTimer = lipgloss.NewStyle()
-	styleTimerDuration = lipgloss.NewStyle().Faint(true)
-	styleTimerFail = lipgloss.NewStyle().Bold(true)
-	styleErrTitle = lipgloss.NewStyle().Bold(true)
-	styleText = lipgloss.NewStyle().Faint(true)
+func newStyles(color bool) styles {
+	if !color {
+		return styles{
+			done:          lipgloss.NewStyle().Faint(true),
+			failed:        lipgloss.NewStyle().Bold(true),
+			running:       lipgloss.NewStyle().Bold(true),
+			errorText:     lipgloss.NewStyle(),
+			check:         lipgloss.NewStyle().Bold(true),
+			cross:         lipgloss.NewStyle().Bold(true),
+			arrow:         lipgloss.NewStyle().Bold(true),
+			timer:         lipgloss.NewStyle(),
+			timerDuration: lipgloss.NewStyle().Faint(true),
+			timerFail:     lipgloss.NewStyle().Bold(true),
+			errTitle:      lipgloss.NewStyle().Bold(true),
+			text:          lipgloss.NewStyle().Faint(true),
+		}
+	}
+
+	return styles{
+		done:          lipgloss.NewStyle().Faint(true),
+		failed:        lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true),
+		running:       lipgloss.NewStyle().Bold(true),
+		errorText:     lipgloss.NewStyle(),
+		check:         lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true),
+		cross:         lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true),
+		arrow:         lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true),
+		timer:         lipgloss.NewStyle().Foreground(lipgloss.Color("12")),
+		timerDuration: lipgloss.NewStyle().Faint(true),
+		timerFail:     lipgloss.NewStyle().Foreground(lipgloss.Color("9")),
+		errTitle:      lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true),
+		text:          lipgloss.NewStyle().Faint(true),
+	}
 }
 
 // ── ttyPrinter ────────────────────────────────────────────────────────────────
@@ -61,19 +82,20 @@ var spinFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"
 // text, and a live braille spinner on the current task.
 type ttyPrinter struct {
 	out          io.Writer
+	style        styles
 	programStart time.Time
 	mu           *sync.Mutex   // reference to Reporter.mu
 	stopCh       chan struct{} // signals spinner goroutine to stop
 	doneCh       chan struct{} // closed when spinner goroutine has exited
 }
 
-func newTTYPrinter(out io.Writer, start time.Time, mu *sync.Mutex) *ttyPrinter {
-	return &ttyPrinter{out: out, programStart: start, mu: mu}
+func newTTYPrinter(out io.Writer, start time.Time, mu *sync.Mutex, color bool) *ttyPrinter {
+	return &ttyPrinter{out: out, style: newStyles(color), programStart: start, mu: mu}
 }
 
-func (p *ttyPrinter) spinPrefix(t taskEntry) string {
+func (p *ttyPrinter) spinPrefix(e Entry) string {
 	wallOff := formatWallClock(time.Since(p.programStart))
-	return styleTimer.Render(wallOff) + "        " + indentStr(t.level)
+	return p.style.timer.Render(wallOff) + "        " + indentStr(e.Level)
 }
 
 func (p *ttyPrinter) pauseLocked() {
@@ -93,11 +115,11 @@ func (p *ttyPrinter) pauseLocked() {
 	p.mu.Lock()
 }
 
-func (p *ttyPrinter) resumeLocked(top *taskEntry) {
+func (p *ttyPrinter) resumeLocked(top *Entry) {
 	if top == nil {
 		return
 	}
-	t := *top
+	e := *top
 	stopCh := make(chan struct{})
 	doneCh := make(chan struct{})
 	p.stopCh = stopCh
@@ -111,8 +133,8 @@ func (p *ttyPrinter) resumeLocked(top *taskEntry) {
 		for {
 			select {
 			case <-ticker.C:
-				prefix := p.spinPrefix(t)
-				fmt.Fprintf(p.out, "\r%s%s %s", prefix, spinFrames[frame%len(spinFrames)], t.label)
+				prefix := p.spinPrefix(e)
+				fmt.Fprintf(p.out, "\r%s%s %s", prefix, spinFrames[frame%len(spinFrames)], e.Label)
 				frame++
 			case <-stopCh:
 				return
@@ -121,56 +143,56 @@ func (p *ttyPrinter) resumeLocked(top *taskEntry) {
 	}()
 }
 
-func (p *ttyPrinter) printRunning(t taskEntry) {
-	wallOff := formatWallClock(t.startTime.Sub(p.programStart))
+func (p *ttyPrinter) Running(e Entry) {
+	wallOff := formatWallClock(e.StartTime.Sub(p.programStart))
 	fmt.Fprintln(p.out,
-		styleTimer.Render(wallOff)+" "+
+		p.style.timer.Render(wallOff)+" "+
 			strings.Repeat(" ", 8)+
-			indentStr(t.level)+
-			styleArrow.Render("▶")+" "+
-			styleRunning.Render(t.label))
+			indentStr(e.Level)+
+			p.style.arrow.Render("▶")+" "+
+			p.style.running.Render(e.Label))
 }
 
-func (p *ttyPrinter) printDone(t taskEntry) {
+func (p *ttyPrinter) Done(e Entry) {
 	now := time.Now()
 	wallOff := formatWallClock(now.Sub(p.programStart))
-	duration := formatElapsed(now.Sub(t.startTime))
-	label := t.label
-	if t.note != "" {
-		label += " " + t.note
+	duration := formatElapsed(now.Sub(e.StartTime))
+	label := e.Label
+	if e.Note != "" {
+		label += " " + e.Note
 	}
 	fmt.Fprintln(p.out,
-		styleTimer.Render(wallOff)+" "+
-			styleTimerDuration.Render("("+duration+")")+" "+
-			indentStr(t.level)+
-			styleCheck.Render("✓")+" "+
-			styleDone.Render(label))
+		p.style.timer.Render(wallOff)+" "+
+			p.style.timerDuration.Render("("+duration+")")+" "+
+			indentStr(e.Level)+
+			p.style.check.Render("✓")+" "+
+			p.style.done.Render(label))
 }
 
-func (p *ttyPrinter) printFailed(t taskEntry, err error) {
+func (p *ttyPrinter) Failed(e Entry, err error) {
 	now := time.Now()
 	wallOff := formatWallClock(now.Sub(p.programStart))
-	duration := formatElapsed(now.Sub(t.startTime))
+	duration := formatElapsed(now.Sub(e.StartTime))
 	fmt.Fprintln(p.out,
-		styleTimerFail.Render(wallOff)+" "+
-			styleTimerDuration.Render("("+duration+")")+" "+
-			indentStr(t.level)+
-			styleCross.Render("✗")+" "+
-			styleFailed.Render(t.label))
+		p.style.timerFail.Render(wallOff)+" "+
+			p.style.timerDuration.Render("("+duration+")")+" "+
+			indentStr(e.Level)+
+			p.style.cross.Render("✗")+" "+
+			p.style.failed.Render(e.Label))
 	if err != nil {
-		pad := indentStr(t.level + 1)
+		pad := indentStr(e.Level + 1)
 		cols := 80 - len(pad)
 		if cols < 20 {
 			cols = 20
 		}
 		wrapped := lipgloss.NewStyle().Width(cols).Render(err.Error())
 		for _, line := range strings.Split(wrapped, "\n") {
-			fmt.Fprintln(p.out, pad+styleError.Render(line))
+			fmt.Fprintln(p.out, pad+p.style.errorText.Render(line))
 		}
 	}
 }
 
-func (p *ttyPrinter) printText(level int, text string) {
+func (p *ttyPrinter) Text(level int, text string) {
 	pad := indentStr(level + 1)
 	cols := 80 - len(pad)
 	if cols < 20 {
@@ -179,13 +201,13 @@ func (p *ttyPrinter) printText(level int, text string) {
 	for _, para := range strings.Split(text, "\n") {
 		wrapped := lipgloss.NewStyle().Width(cols).Render(para)
 		for _, line := range strings.Split(wrapped, "\n") {
-			fmt.Fprintln(p.out, pad+styleText.Render(line))
+			fmt.Fprintln(p.out, pad+p.style.text.Render(line))
 		}
 	}
 }
 
-func (p *ttyPrinter) printPanic(err error) {
-	fmt.Fprintln(p.out, "\n"+styleErrTitle.Render("Error")+"\n")
-	fmt.Fprintln(p.out, styleError.Render(err.Error()))
+func (p *ttyPrinter) Panic(err error) {
+	fmt.Fprintln(p.out, "\n"+p.style.errTitle.Render("Error")+"\n")
+	fmt.Fprintln(p.out, p.style.errorText.Render(err.Error()))
 	os.Exit(1)
 }
