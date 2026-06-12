@@ -15,10 +15,11 @@ import (
 	"time"
 
 	"github.com/fogfish/chalk"
+	"github.com/fogfish/chalk/rt/cli"
 )
 
 func main() {
-	chalk.Start(
+	cli.Start(
 		func(ctx context.Context, _ string, _ io.Reader, _ io.Writer) error {
 			chalk.Task(ctx, "Configure")
 			time.Sleep(2 * time.Second)
